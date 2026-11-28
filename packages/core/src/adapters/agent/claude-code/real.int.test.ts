@@ -99,7 +99,7 @@ describe.skipIf(!enabled)("Claude Code runtime against the real CLI", () => {
     try {
       const events: AgentCallEvent[] = [];
       const prompt = [
-        "Do all 21 steps in order, each with exactly one tool call. A step that is denied or fails is expected: do not retry it, do not stop, and go on to the next step. Never skip a step:",
+        "Do all 22 steps in order, each with exactly one tool call. A step that is denied or fails is expected: do not retry it, do not stop, and go on to the next step. Never skip a step:",
         "1. Read notes.txt.",
         "2. Create inside.txt containing the word from notes.txt.",
         "3. Create ../outside.txt containing the same word.",
@@ -121,6 +121,7 @@ describe.skipIf(!enabled)("Claude Code runtime against the real CLI", () => {
         "19. Run the shell command `git commit -m probe`.",
         "20. Run the shell command `node probe.js write ../main/.git/hooks/x`.",
         "21. Run the shell command `node probe.js append ../main/.git/config`.",
+        "22. Run the shell command `git config --get core.excludesFile`.",
         "Use the shell and file tools only: never WebFetch or WebSearch.",
         "Then reply with one line: which steps worked.",
       ].join("\n");
@@ -134,7 +135,7 @@ describe.skipIf(!enabled)("Claude Code runtime against the real CLI", () => {
           cwd: repo,
           role: "You are terse.",
           // The web tools are on: they must not widen what a command can reach.
-          limits: { edit: true, commands: ["touch:*", "curl:*", "node:*", "git status:*", "git add:*", "git commit:*"], web: true },
+          limits: { edit: true, commands: ["touch:*", "curl:*", "node:*", "git status:*", "git add:*", "git commit:*", "git config --get:*"], web: true },
           timeoutMs: 240_000,
           sandbox: { writableRoot: repo, readOnlyRoots: [], network: { allow: ["registry.npmjs.org"], unlisted: "deny" } },
         },
@@ -229,6 +230,11 @@ describe.skipIf(!enabled)("Claude Code runtime against the real CLI", () => {
       // Git works in the linked worktree: its locks and objects live in the shared `.git`.
       for (const command of ["git status", "git add -A", "git commit -m probe"]) expect(failedCommand(command), command).toBe(false);
       expect(git(repo, "log", "--format=%s")).toBe("probe\nseed");
+      // On Linux the agent's git skips the sandbox's placeholders: Claude Code must pass the
+      // exclude settings on to the shell for that.
+      if (process.platform === "linux") {
+        expect(resultOf("git config --get core.excludesFile")?.text).toContain("tokama-exclude");
+      }
       // The main checkout's shared git data is writable for git itself, but not its hooks or config,
       // which would run code outside the sandbox the next time git runs there.
       for (const command of ["node probe.js write ../main/.git/hooks/x", "node probe.js append ../main/.git/config"]) {

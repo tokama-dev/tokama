@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -18,6 +18,7 @@ import {
   type WorktreeRepo,
   worktreeSnapshot,
 } from "./index.js";
+import { removeSandboxPlaceholders } from "./placeholders.js";
 
 const SLOW = { timeout: 30_000 };
 // UUIDv7 ids made in the same millisecond: the same timestamp prefix, different random tails.
@@ -400,5 +401,71 @@ describe("worktreeSnapshot", () => {
 
   it("is undefined when git fails", SLOW, async () => {
     expect(await worktreeSnapshot(git, home)).toBeUndefined();
+  });
+});
+
+describe("the placeholders of Claude Code's Linux sandbox", () => {
+  // What a killed call leaves behind: empty read-only files at the protected paths.
+  const leave = (path: string, names: readonly string[]) => {
+    for (const name of names) {
+      mkdirSync(join(path, ...name.split("/").slice(0, -1)), { recursive: true });
+      writeFileSync(join(path, ...name.split("/")), "", { mode: 0o444 });
+    }
+  };
+  const NAMES = [".bash_profile", ".bashrc", ".claude/agents", ".claude/commands", ".claude/hooks", ".claude/settings.json", ".claude/settings.local.json", ".claude/skills", ".gitconfig", ".gitmodules", ".idea", ".mcp.json", ".profile", ".ripgreprc", ".vscode", ".zprofile", ".zshrc"];
+
+  it("removes the empty untracked placeholders and keeps every other file", SLOW, async () => {
+    const worktree = value(await createWorktree(git, repo, ITEM_A));
+    const path = worktreePath(repo.path, worktree);
+    leave(path, NAMES);
+    writeFileSync(join(path, "work.txt"), "work\n");
+    // Not placeholders: one with content, one that is a link, one in a folder the sandbox does not guard.
+    unlinkSync(join(path, ".profile"));
+    writeFileSync(join(path, ".profile"), "export A=1\n");
+    unlinkSync(join(path, ".zshrc"));
+    symlinkSync("a.txt", join(path, ".zshrc"));
+    leave(path, ["src/.bashrc"]);
+    expect(await removeSandboxPlaceholders(git, path, "linux")).toBe(15);
+    expect(await plain(path, "status", "--porcelain", "--untracked-files=all")).toBe("?? .profile\n?? .zshrc\n?? src/.bashrc\n?? work.txt");
+  });
+
+  it("leaves a special file alone and never opens it (a FIFO stands in for the sandbox's character device)", SLOW, async () => {
+    const worktree = value(await createWorktree(git, repo, ITEM_A));
+    const path = worktreePath(repo.path, worktree);
+    const made = await createProcessRunner().run({ command: { argv: ["mkfifo", join(path, ".bashrc")] }, cwd: path });
+    expect(made.kind === "finished" && made.exitCode).toBe(0);
+    leave(path, [".zshrc"]);
+    expect(await removeSandboxPlaceholders(git, path, "linux")).toBe(1);
+    expect(lstatSync(join(path, ".bashrc")).isFIFO()).toBe(true);
+    expect(existsSync(join(path, ".zshrc"))).toBe(false);
+  });
+
+  it("keeps a tracked placeholder name, even when the file is empty", SLOW, async () => {
+    leave(repo.path, [".gitmodules", ".claude/settings.json"]);
+    await plain(repo.path, "add", ".gitmodules", ".claude/settings.json");
+    await plain(repo.path, "commit", "-q", "-m", "empty files");
+    const worktree = value(await createWorktree(git, repo, ITEM_A));
+    const path = worktreePath(repo.path, worktree);
+    expect(await removeSandboxPlaceholders(git, path, "linux")).toBe(0);
+    expect(existsSync(join(path, ".gitmodules"))).toBe(true);
+    expect(existsSync(join(path, ".claude", "settings.json"))).toBe(true);
+  });
+
+  it("does nothing on another OS", SLOW, async () => {
+    const worktree = value(await createWorktree(git, repo, ITEM_A));
+    const path = worktreePath(repo.path, worktree);
+    leave(path, NAMES);
+    expect(await removeSandboxPlaceholders(git, path, "darwin")).toBe(0);
+    expect(existsSync(join(path, ".bashrc"))).toBe(true);
+  });
+
+  it.runIf(process.platform === "linux")("keeps them out of the commit", SLOW, async () => {
+    const worktree = value(await createWorktree(git, repo, ITEM_A));
+    const path = worktreePath(repo.path, worktree);
+    leave(path, NAMES);
+    writeFileSync(join(path, "work.txt"), "work\n");
+    value(await finish(worktree, ITEM_A, "Add work"));
+    expect(await plain(repo.path, "ls-tree", "-r", "--name-only", worktree.branch)).toBe("a.txt\nwork.txt");
+    expect(existsSync(join(path, ".bashrc"))).toBe(false);
   });
 });

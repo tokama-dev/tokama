@@ -42,6 +42,32 @@ export const PACKAGE_REGISTRY_HOSTS: readonly string[] = [
   "services.gradle.org",
 ];
 
+/**
+ * Paths in the working directory that Claude Code's sandbox on Linux write-protects. A path that
+ * is missing gets a placeholder (bubblewrap binds `/dev/null` over it): a character device inside
+ * the sandbox, and on the host an empty read-only file that stays if the call is killed before
+ * its own cleanup. Relative to the working directory, "/" separators.
+ */
+export const SANDBOX_PLACEHOLDER_PATHS: readonly string[] = [
+  ".bash_profile",
+  ".bashrc",
+  ".claude/agents",
+  ".claude/commands",
+  ".claude/hooks",
+  ".claude/settings.json",
+  ".claude/settings.local.json",
+  ".claude/skills",
+  ".gitconfig",
+  ".gitmodules",
+  ".idea",
+  ".mcp.json",
+  ".profile",
+  ".ripgreprc",
+  ".vscode",
+  ".zprofile",
+  ".zshrc",
+];
+
 /** Files in the home folder that hold logins and keys. Commands may not read them. `~/`-relative. */
 export const CREDENTIAL_PATHS: readonly string[] = [
   "~/.ssh",

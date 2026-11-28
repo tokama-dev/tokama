@@ -9,6 +9,7 @@ import type { Git } from "../../kernel/git/index.js";
 import { err, ok, type Result } from "../../kernel/result/index.js";
 import type { ItemId } from "../../kernel/schemas/index.js";
 import { cutText } from "../../kernel/text/index.js";
+import { removeSandboxPlaceholders } from "./placeholders.js";
 import type { ItemWorktree } from "./worktree.js";
 
 export type CommitErrorReason = "nothing-to-commit" | "git";
@@ -55,8 +56,12 @@ function cutSubject(line: string): string {
 
 const gitFailure = (error: { readonly message: string }): Result<never, CommitError> => err({ reason: "git", message: error.message });
 
-/** Stages every change in the worktree; returns the tree id to commit once the checks pass. */
+/**
+ * Stages every change in the worktree; returns the tree id to commit once the checks pass. On
+ * Linux it first removes the placeholders a killed sandboxed call left behind.
+ */
 export async function stageItem(git: Git, worktreePath: string): Promise<Result<string, CommitError>> {
+  await removeSandboxPlaceholders(git, worktreePath);
   const added = await git.addAll(worktreePath);
   if (!added.ok) return gitFailure(added.error);
   const tree = await git.writeTree(worktreePath);

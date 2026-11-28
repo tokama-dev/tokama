@@ -9,6 +9,7 @@ import type { AgentCallRequest, AgentRuntime } from "../../../kernel/ports/index
 import { checkSandboxSpec, createSandboxSupport, NESTED_BLOCKED_HINT, toolCacheDirs, usableCacheDirs, type SandboxSpec, type SandboxSupport } from "../../../kernel/sandbox/index.js";
 import type { AgentCallErrorKind, AgentCallEvent, TokenUsage } from "../../../kernel/schemas/index.js";
 import { buildArgs, DEFAULT_TOKAMA_HOME, userMessage, usesShell } from "./args.js";
+import { placeholderExcludeEnv } from "./git-exclude.js";
 import { hookSettings } from "./permission-hook.js";
 import { mentionsSandbox, sandboxSettings, sandboxStartProblem } from "./sandbox.js";
 import { classifyFailure, createStreamParser, type StreamParser, type StreamState } from "./stream.js";
@@ -33,6 +34,8 @@ export interface ClaudeCodeOptions {
   readonly closedDirs?: readonly string[];
   /** Whether this machine can run Claude Code's sandbox. Default: checked for this OS through `runner`. */
   readonly sandboxSupport?: SandboxSupport;
+  /** The OS the sandbox is checked and set up for. Default: this one. */
+  readonly platform?: NodeJS.Platform;
 }
 
 const NO_TOKENS: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -51,7 +54,8 @@ export function createClaudeCodeRuntime(options: ClaudeCodeOptions = {}): AgentR
   const clock = options.clock ?? systemClock;
   const resultGraceMs = options.resultGraceMs ?? RESULT_GRACE_MS;
   const hookCommand = options.hookCommand ?? [process.execPath, fileURLToPath(new URL("./hook.js", import.meta.url))];
-  const sandboxSupport = options.sandboxSupport ?? createSandboxSupport(runner, process.platform, options.env);
+  const platform = options.platform ?? process.platform;
+  const sandboxSupport = options.sandboxSupport ?? createSandboxSupport(runner, platform, options.env);
   // The PATH and home the CLI will start with: no cache folder may hold a PATH folder.
   const childEnv = buildEnv(process.env, options.env);
   const pathDirs = (childEnv["PATH"] ?? "").split(delimiter);
@@ -119,6 +123,9 @@ export function createClaudeCodeRuntime(options: ClaudeCodeOptions = {}): AgentR
         yield { type: "end", outcome: "failed", usage: NO_TOKENS, error: args.error, errorKind: "crash" };
         return;
       }
+      // The agent's git skips the placeholders the sandbox makes in the worktree.
+      const excludeEnv = callDir === undefined ? undefined : await placeholderExcludeEnv(request.cwd, { runner, home, platform, ...(options.env !== undefined && { env: options.env }) });
+      const runEnv = excludeEnv === undefined ? options.env : { ...options.env, ...excludeEnv };
       // Stops the call when the caller stops reading, and shortly after a result if the CLI
       // lingers, so the process tree never outlives the call.
       const stop = new AbortController();
@@ -141,7 +148,7 @@ export function createClaudeCodeRuntime(options: ClaudeCodeOptions = {}): AgentR
         .run({
           command: { argv: [...command, ...args.value] },
           cwd: request.cwd,
-          ...(options.env !== undefined && { env: options.env }),
+          ...(runEnv !== undefined && { env: runEnv }),
           stdin: userMessage(request.prompt),
           timeoutMs,
           signal: AbortSignal.any([signal, stop.signal]),
